@@ -4,6 +4,8 @@
 
 ## 실제 Chrome 데모
 
+https://github.com/user-attachments/assets/504d1c86-3ceb-4c71-b6aa-0465b9bc82c0
+
 [데모 영상 다운로드 (MP4, 25.5초)](docs/demo/zoro-spoiler-chrome-before-after-demo.mp4?raw=1)
 
 | 영상 | 열어본 방법 |
