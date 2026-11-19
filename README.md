@@ -4,9 +4,16 @@
 
 ## 실제 Chrome 데모
 
+25.5초 데모가 아래에서 자동으로 반복됩니다. 댓글을 여는 장면에는 실제 스포일러가 잠시 표시됩니다.
+
+![세 가지 유튜브 접근 방법과 확장을 끈 댓글창·켠 댓글창 비교](docs/demo/zoro-spoiler-chrome-before-after-demo.gif)
+
+<details>
+<summary>원본 MP4 플레이어 열기</summary>
+
 https://github.com/user-attachments/assets/504d1c86-3ceb-4c71-b6aa-0465b9bc82c0
 
-[데모 영상 다운로드 (MP4, 25.5초)](docs/demo/zoro-spoiler-chrome-before-after-demo.mp4?raw=1)
+</details>
 
 | 영상 | 열어본 방법 |
 | --- | --- |
@@ -15,8 +22,6 @@ https://github.com/user-attachments/assets/504d1c86-3ceb-4c71-b6aa-0465b9bc82c0
 | 〈파묘〉 | 외부 테스트 페이지의 유튜브 공유 링크 클릭 |
 
 영상마다 **왼쪽은 확장을 끈 댓글창**, **오른쪽은 확장을 켠 댓글창**입니다. 왼쪽에서는 댓글 본문이 그대로 보입니다. 오른쪽에서는 같은 댓글이 가려지고, 보기 버튼으로 열었다가 다시 가릴 수 있습니다. 〈식스센스〉에서는 **스포일러 의심 · 보기** 문구를 확인할 수 있습니다.
-
-댓글을 여는 장면에는 실제 스포일러가 잠시 표시됩니다.
 
 ## 빠른 시작
 
