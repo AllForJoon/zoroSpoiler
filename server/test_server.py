@@ -41,7 +41,7 @@ class DecisionTests(unittest.TestCase):
         self.addCleanup(client.close)
         windows = transcript_windows(VIDEO)
         comment = "연출이 좋았어요.\n범인이 옆집 사람이었네"
-        with patch.object(client, "ask_probability", side_effect=[0.90, 0.91]) as ask:
+        with patch.object(client, "ask_probability", side_effect=[0.90, 0.91, 0.18]) as ask:
             decision = client.judge_one(VIDEO, windows, comment)
         self.assertEqual(decision, {"status": "spoiler", "startSec": 760, "endSec": 765})
         reveal_state, reveal_label, _, deadline = ask.call_args_list[0].args
@@ -51,8 +51,11 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(grounding_label, "grounded")
         self.assertEqual(grounding_deadline, deadline)
         self.assertIn(VIDEO.cues[0].text, grounding_state)
+        self.assertEqual(ask.call_args_list[2].args[:2], (grounding_state, "undisclosed"))
 
         with patch.object(client, "ask_probability", side_effect=[0.93, 0.65]):
+            self.assertEqual(client.judge_one(VIDEO, windows, comment), {"status": "uncertain"})
+        with patch.object(client, "ask_probability", side_effect=[0.93, 0.98, 0.75]):
             self.assertEqual(client.judge_one(VIDEO, windows, comment), {"status": "uncertain"})
 
     def test_caption_candidates_prioritize_the_stronger_later_match(self):
@@ -86,10 +89,11 @@ class StubZoroHandler(BaseHTTPRequestHandler):
             self.send_error(400)
             return
         ((label, question),) = payload["request"]["questions"].items()
-        if question["type"] != "noul" or label not in {"reveals", "grounded"}:
+        if question["type"] != "noul" or label not in {"reveals", "grounded", "undisclosed"}:
             self.send_error(400)
             return
-        probability = 0.95 if "범인" in payload["request"]["state"] else 0.05
+        is_positive = label != "undisclosed" and "범인" in payload["request"]["state"]
+        probability = 0.95 if is_positive else 0.05
         response = json.dumps({"answers": {label: {
             "type": "noul", "noul": probability,
         }}}).encode()
