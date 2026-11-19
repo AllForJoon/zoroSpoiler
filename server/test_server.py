@@ -93,6 +93,18 @@ class DecisionTests(unittest.TestCase):
         missing_transition = replace(EPISODE_VIDEO, cues=EPISODE_VIDEO.cues[:-1])
         self.assertNotIn(9, episode_spans(missing_transition))
 
+    def test_caption_only_episode_scope_excludes_preview_and_later_recap(self):
+        video = replace(EPISODE_VIDEO, chapters=(), cues=parse_captions(
+            "WEBVTT\n\n02:55.000 --> 02:58.000\n9화 예고에서 범인이 보입니다.\n\n"
+            "03:00.000 --> 03:04.000\n9화 재회는 정말 대단했죠.\n\n"
+            "03:04.000 --> 03:08.000\n엔딩에서 범인이 밝혀졌습니다.\n\n"
+            "03:20.000 --> 03:25.000\n10화부터는 새로운 단서가 나옵니다.\n\n"
+            "04:10.000 --> 04:15.000\n9화에서는 문을 열었고\n\n"
+            "04:15.000 --> 04:19.000\n10화에서는 단서를 찾았습니다.\n"
+        ))
+        self.assertEqual(episode_spans(video)[9], ((180.0, 200.0),))
+        self.assertNotIn(9, episode_spans(replace(video, cues=video.cues[:-3])))
+
     def test_explicit_episode_uses_only_that_episode_and_keeps_the_same_gates(self):
         client = ZoroDecisionClient("http://127.0.0.1:0", timeout=2)
         self.addCleanup(client.close)
@@ -198,6 +210,31 @@ class EndpointTests(unittest.TestCase):
             {"id": "spoil", "status": "spoiler", "startSec": 760, "endSec": 765},
             {"id": "safe", "status": "safe"},
         ])
+
+    def test_browser_transcript_judges_unregistered_video_and_returns_status_only(self):
+        video_id = "missing1234"
+        response = self.request("/v1/judge", {
+            "videoId": video_id,
+            "title": "Short clip",
+            "cues": [{"start": 0, "end": 5, "text": "범인 was the mayor."}],
+            "comments": [{"id": "x", "text": "범인 was the mayor"}, {"id": "y", "text": "Great film"}],
+        })
+        self.assertEqual(response["decisions"], [{"id": "x", "status": "spoiler"}, {"id": "y", "status": "safe"}])
+        self.assertFalse(self.request(f"/v1/videos/{video_id}")["eligible"])
+
+    def test_invalid_browser_transcript_never_falls_back_to_registered_captions(self):
+        payload = {
+            "videoId": VIDEO_ID,
+            "title": "A clip",
+            "comments": [{"id": "x", "text": "범인"}],
+        }
+        for bad_cues in ([], [{"start": True, "end": 3, "text": "내용"}],
+                         [{"start": 2, "end": float("nan"), "text": "내용"}],
+                         [{"start": 3, "end": 4, "text": "첫 줄"}, {"start": 1, "end": 2, "text": "다음"}]):
+            with self.subTest(bad_cues=bad_cues), self.assertRaises(HTTPError) as failure:
+                self.request("/v1/judge", {**payload, "cues": bad_cues})
+            self.assertEqual(failure.exception.code, 400)
+            failure.exception.close()
 
     def test_upstream_failure_does_not_return_a_safe_verdict(self):
         self.decider.url += "/missing"

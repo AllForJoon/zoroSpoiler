@@ -8,12 +8,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .decision import ZoroDecisionClient
-from .videos import VIDEO_ID, Video, load_video, parse_captions, parse_chapters, save_video
+from .decision import DecisionClient, ZoroDecisionClient
+from .videos import VIDEO_ID, Video, browser_transcript_video, load_video, parse_captions, parse_chapters, save_video
 
 DEFAULT_PORT = 8876
+LOCAL_MODEL_PORT = 8878
 DEFAULT_URL = "http://127.0.0.1:30001/v1/decide"
-MAX_REQUEST_BYTES = 65536
+MAX_REQUEST_BYTES = 2 * 1024 * 1024
 MAX_COMMENTS = 8
 
 
@@ -41,7 +42,7 @@ def validate_request(payload: object) -> tuple[str, list[dict]]:
 
 
 class SpoilerServer(ThreadingHTTPServer):
-    def __init__(self, port: int, data_dir: Path, decider: ZoroDecisionClient):
+    def __init__(self, port: int, data_dir: Path, decider: DecisionClient):
         super().__init__(("127.0.0.1", port), Handler)
         self.data_dir = data_dir
         self.decider = decider
@@ -118,15 +119,23 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(413, {"error": "invalid_request_size"})
             return
         try:
-            video_id, comments = validate_request(json.loads(self.rfile.read(size)))
+            payload = json.loads(self.rfile.read(size))
+            video_id, comments = validate_request(payload)
+            from_browser = "cues" in payload
+            video = browser_transcript_video(
+                video_id, payload.get("title"), payload["cues"], payload.get("chapters", ())
+            ) if from_browser else None
         except (ValueError, RecursionError):
             self.send_json(400, {"error": "invalid_request"})
             return
-        video, reason = self.server.lookup(video_id)
         if video is None:
-            self.send_json(404, {"error": reason})
-            return
+            video, reason = self.server.lookup(video_id)
+            if video is None:
+                self.send_json(404, {"error": reason})
+                return
         decisions, failed = self.server.decider.judge(video, comments)
+        if from_browser:
+            decisions = [{"id": verdict["id"], "status": verdict["status"]} for verdict in decisions]
         if failed == len(comments):
             self.send_json(503, {"error": "decision_service_unavailable", "decisions": decisions})
             return
@@ -148,9 +157,15 @@ def parse_args() -> argparse.Namespace:
     register.add_argument("--captions", required=True, type=Path, help="Timed Korean SRT or VTT file.")
     register.add_argument("--timestamps", required=True, type=Path, help="Text file with one timestamp per line.")
     serve = subcommands.add_parser("serve", parents=[common], help="Start the private loopback API.")
-    serve.add_argument("--port", type=int, default=DEFAULT_PORT)
-    serve.add_argument("--zoro-url", default=os.environ.get("ZORO_DECIDE_URL", DEFAULT_URL))
-    return parser.parse_args()
+    serve.add_argument("--port", type=int, help=f"Loopback port (default {DEFAULT_PORT}, local model {LOCAL_MODEL_PORT}).")
+    model = serve.add_mutually_exclusive_group()
+    model.add_argument("--zoro-url", help="Use an existing Zoro-1 typed decision HTTP endpoint.")
+    model.add_argument("--local-model", action="store_true", help="Load the official Zoro-1 checkpoint in this process.")
+    serve.add_argument("--checkpoint", type=Path, help="Local Zoro-1 snapshot directory for --local-model.")
+    args = parser.parse_args()
+    if args.command == "serve" and args.checkpoint is not None and not args.local_model:
+        serve.error("--checkpoint requires --local-model")
+    return args
 
 
 def main() -> int:
@@ -172,10 +187,23 @@ def main() -> int:
         print(f"Registered {video.video_id} with {len(video.cues)} cues.")
         return 0
 
-    decider = ZoroDecisionClient(args.zoro_url, timeout=12)
+    if args.local_model:
+        from .local_model import load_local_decision_client
+
+        print("Loading local Zoro-1 checkpoint…", flush=True)
+        try:
+            decider = load_local_decision_client(args.checkpoint)
+        except (OSError, ValueError, RuntimeError) as error:
+            print(f"Could not load local Zoro-1: {error}", file=sys.stderr)
+            return 1
+    else:
+        url = args.zoro_url or os.environ.get("ZORO_DECIDE_URL", DEFAULT_URL)
+        decider = ZoroDecisionClient(url, timeout=12)
+    port = args.port if args.port is not None else LOCAL_MODEL_PORT if args.local_model else DEFAULT_PORT
     try:
-        with SpoilerServer(args.port, args.data_dir, decider) as server:
-            print(f"ZoroSpoiler listening at http://127.0.0.1:{server.server_port}", flush=True)
+        with SpoilerServer(port, args.data_dir, decider) as server:
+            mode = "local checkpoint" if args.local_model else "Zoro-1 HTTP endpoint"
+            print(f"ZoroSpoiler listening at http://127.0.0.1:{server.server_port} ({mode})", flush=True)
             server.serve_forever()
     except KeyboardInterrupt:
         pass

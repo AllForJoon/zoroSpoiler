@@ -1,4 +1,4 @@
-"""Register Korean caption tracks and editorial timestamps supplied by the operator."""
+"""Load video captions and optional chapter boundaries."""
 
 import html
 import json
@@ -18,6 +18,10 @@ CHAPTER_LINE = re.compile(rf"^\s*({TIMESTAMP_TEXT})(?:[ \t]+(.*?))?\s*$")
 HANGUL = re.compile(r"[가-힣]")
 MIN_DURATION = 600
 MAX_DURATION = 1200
+MAX_TRANSCRIPT_SECONDS = 12 * 60 * 60
+MAX_TRANSCRIPT_CUES = 12_000
+MAX_CUE_TEXT_LENGTH = 1_000
+MAX_TRANSCRIPT_CHAPTERS = 400
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,48 @@ class Video:
     language: str
     chapters: tuple[Chapter, ...]
     cues: tuple[Cue, ...]
+
+
+def browser_transcript_video(video_id: str, title: object, cues: object, chapters: object = ()) -> Video:
+    if not isinstance(title, str) or not title.strip() or len(title) > 300:
+        raise ValueError("Video title must contain 1 to 300 characters")
+    title.encode("utf-8")
+    if not isinstance(cues, list) or not 1 <= len(cues) <= MAX_TRANSCRIPT_CUES:
+        raise ValueError("Supply a nonempty timed transcript")
+
+    parsed_cues = []
+    previous_start = -1
+    for cue in cues:
+        if not isinstance(cue, dict):
+            raise ValueError("Each caption cue must be an object")
+        start, end, text = cue.get("start"), cue.get("end"), cue.get("text")
+        if (type(start) not in (int, float) or type(end) not in (int, float)
+                or not 0 <= start < end <= MAX_TRANSCRIPT_SECONDS or start < previous_start):
+            raise ValueError("Caption cues must have valid, chronological times in seconds")
+        if not isinstance(text, str) or not text.strip() or len(text) > MAX_CUE_TEXT_LENGTH:
+            raise ValueError("Caption cues require text")
+        text.encode("utf-8")
+        parsed_cues.append(Cue(start, end, " ".join(text.split())))
+        previous_start = start
+
+    duration = max(cue.end for cue in parsed_cues)
+    if not isinstance(chapters, (list, tuple)) or len(chapters) > MAX_TRANSCRIPT_CHAPTERS:
+        raise ValueError("Invalid transcript chapters")
+    parsed_chapters = []
+    previous_start = -1
+    for chapter in chapters:
+        if not isinstance(chapter, dict):
+            raise ValueError("Each chapter must be an object")
+        start, chapter_title = chapter.get("start"), chapter.get("title")
+        if (type(start) not in (int, float) or not 0 <= start <= MAX_TRANSCRIPT_SECONDS
+                or start <= previous_start or not isinstance(chapter_title, str) or len(chapter_title) > 300):
+            raise ValueError("Chapters must have distinct, chronological times and titles")
+        chapter_title.encode("utf-8")
+        if start < duration:
+            parsed_chapters.append(Chapter(start, chapter_title.strip()))
+        previous_start = start
+
+    return Video(video_id, title.strip(), duration, "und", tuple(parsed_chapters), tuple(parsed_cues))
 
 
 def timestamp_seconds(timestamp: str) -> float:

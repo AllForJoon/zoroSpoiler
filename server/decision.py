@@ -6,8 +6,11 @@ import math
 import re
 import time
 import unicodedata
+from bisect import bisect_left
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from statistics import median
 from urllib.request import Request, urlopen
 
 from .episodes import episode_numbers, episode_spans
@@ -74,6 +77,7 @@ class Window:
     end: float
     cues: tuple[Cue, ...]
     chapters: tuple[Chapter, ...]
+    grouped_captions: bool = False
 
 
 def searchable_tokens(value: str) -> set[str]:
@@ -99,15 +103,39 @@ def transcript_windows(
         left, right = span
         cues = tuple(cue for cue in video.cues if left <= cue.start and cue.end <= right)
         chapters = ()
-    return tuple(
-        Window(
-            start,
-            min(start + window_seconds, right),
-            tuple(cue for cue in cues if cue.start < start + window_seconds and cue.end > start),
-            tuple(chapter for chapter in chapters if start <= chapter.start < start + window_seconds),
-        )
-        for start in (left + offset for offset in range(0, math.ceil(right - left), WINDOW_STRIDE_SECONDS))
-    )
+    cue_starts = tuple(cue.start for cue in cues)
+    chapter_starts = tuple(chapter.start for chapter in chapters)
+    windows = []
+    active_cues = ()
+    cue_index = 0
+    for offset in range(0, math.ceil(right - left), WINDOW_STRIDE_SECONDS):
+        start = left + offset
+        limit = start + window_seconds
+        next_index = bisect_left(cue_starts, limit, lo=cue_index)
+        active_cues = tuple(cue for cue in active_cues + cues[cue_index:next_index] if cue.end > start)
+        cue_index = next_index
+        window_chapters = chapters[bisect_left(chapter_starts, start):bisect_left(chapter_starts, limit)]
+        windows.append(Window(start, min(limit, right), active_cues, window_chapters))
+    return tuple(windows)
+
+
+def episode_windows(video: Video, span: tuple[float, float]) -> tuple[Window, ...]:
+    left, right = span
+    cues = tuple(cue for cue in video.cues if left <= cue.start and cue.end <= right)
+    if not cues or median(cue.end - cue.start for cue in cues) <= WINDOW_STRIDE_SECONDS / 2:
+        return transcript_windows(video, span=span, window_seconds=EPISODE_WINDOW_SECONDS)
+
+    # A small overlap with a long YouTube transcript group can pull in a whole unrelated sentence.
+    # Use up to two adjacent complete caption groups as the evidence in these cases.
+    windows = []
+    for index, cue in enumerate(cues):
+        pair = cues[index:index + 2]
+        if pair[-1].end - cue.start > EPISODE_WINDOW_SECONDS + WINDOW_STRIDE_SECONDS:
+            pair = (cue,)
+        if len(pair) == 1 and windows and windows[-1].cues[-1] is cue:
+            continue
+        windows.append(Window(cue.start, max(item.end for item in pair), pair, (), grouped_captions=True))
+    return tuple(windows)
 
 
 def candidate_windows(comment: str, windows: tuple[Window, ...]) -> list[Window]:
@@ -123,10 +151,8 @@ def candidate_windows(comment: str, windows: tuple[Window, ...]) -> list[Window]
                                            + [cue.text for cue in window.cues]))
         for window in windows
     ]
-    weights = {
-        term: math.log1p(len(windows) / sum(term in match for match in matches))
-        for term in set().union(*matches)
-    }
+    frequencies = Counter(term for match in matches for term in match)
+    weights = {term: math.log1p(len(windows) / frequency) for term, frequency in frequencies.items()}
     scored = [
         (sum(weights[term] for term in match)
          + 12 * any(window.start <= timestamp < window.end for timestamp in timestamps), window)
@@ -174,19 +200,19 @@ def decision_request(state: str, label: str, instructions: str) -> dict:
     }
 
 
-class ZoroDecisionClient:
-    def __init__(self, url: str, timeout: float):
-        self.url = url
+class DecisionClient:
+    def __init__(self, timeout: float, workers: int):
         self.timeout = timeout
-        self.executor = ThreadPoolExecutor(max_workers=8)
+        self.executor = ThreadPoolExecutor(max_workers=workers)
 
     def close(self):
         self.executor.shutdown()
 
     def judge(self, video: Video, comments: list[dict]) -> tuple[list[dict], int]:
+        deadline = time.monotonic() + self.timeout
         windows = transcript_windows(video)
         futures = [
-            self.executor.submit(self.judge_one, video, windows, comment["text"])
+            self.executor.submit(self.judge_one, video, windows, comment["text"], deadline)
             for comment in comments
         ]
         results = []
@@ -201,11 +227,12 @@ class ZoroDecisionClient:
             results.append({"id": comment["id"], **result})
         return results, failed
 
-    def judge_one(self, video: Video, windows: tuple[Window, ...], comment: str) -> dict:
+    def judge_one(self, video: Video, windows: tuple[Window, ...], comment: str, deadline: float | None = None) -> dict:
         comment = comment.strip()
         if not comment or len(comment.encode("utf-8")) > MAX_COMMENT_BYTES:
             return {"status": "uncertain"}
-        deadline = time.monotonic() + self.timeout
+        if deadline is None:
+            deadline = time.monotonic() + self.timeout
         episodes = episode_numbers(comment)
         if len(episodes) > 1:
             return {"status": "uncertain"}
@@ -242,10 +269,7 @@ class ZoroDecisionClient:
         review = json.dumps({"review_title": video.title, "viewer_comment": comment}, ensure_ascii=False)
         if self.ask_probability(review, "reveals", REVEAL_QUESTION, deadline) <= MAX_SAFE_SPOILER_PROBABILITY:
             return {"status": "safe"}
-        windows = tuple(
-            window for span in spans
-            for window in transcript_windows(video, span=span, window_seconds=EPISODE_WINDOW_SECONDS)
-        )
+        windows = tuple(window for span in spans for window in episode_windows(video, span))
         candidates = candidate_windows(comment, windows)
         if not candidates:
             return {"status": "uncertain"}
@@ -257,7 +281,8 @@ class ZoroDecisionClient:
             "댓글": comment,
             "명시된 회차": episode,
             "자막 회차": episode,
-            "자막": "\n".join(cue.text for cue in window.cues),
+            "자막": "\n".join(f"{cue.start:g}초: {cue.text}" if window.grouped_captions else cue.text
+                              for cue in window.cues),
         }, ensure_ascii=False)
         if len(state.encode("utf-8")) > MAX_STATE_BYTES:
             return {"status": "uncertain"}
@@ -268,6 +293,15 @@ class ZoroDecisionClient:
         if self.ask_probability(state, "undisclosed", EPISODE_UNDISCLOSED_QUESTION, deadline) > MAX_UNDISCLOSED_PROBABILITY:
             return {"status": "uncertain"}
         return spoiler_verdict(window)
+
+    def ask_probability(self, state: str, label: str, instructions: str, deadline: float) -> float:
+        raise NotImplementedError
+
+
+class ZoroDecisionClient(DecisionClient):
+    def __init__(self, url: str, timeout: float):
+        super().__init__(timeout, workers=8)
+        self.url = url
 
     def ask_probability(self, state: str, label: str, instructions: str, deadline: float) -> float:
         body = decision_request(state, label, instructions)

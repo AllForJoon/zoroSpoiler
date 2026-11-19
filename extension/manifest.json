@@ -1,9 +1,11 @@
 {
   "manifest_version": 3,
   "name": "ZoroSpoiler",
-  "version": "0.1.0",
-  "description": "유튜브에서 아직 보지 않은 장면을 밝히는 댓글을 가립니다.",
+  "version": "0.2.0",
+  "description": "스크립트가 있는 유튜브 영상에서 스포일러 댓글을 가립니다.",
+  "permissions": ["storage"],
   "host_permissions": ["http://127.0.0.1/*"],
+  "options_page": "options.html",
   "background": {
     "service_worker": "worker.js"
   },
@@ -11,7 +13,7 @@
     {
       "matches": ["https://www.youtube.com/*"],
       "css": ["comments.css"],
-      "js": ["content.js"],
+      "js": ["transcript.js", "content.js"],
       "run_at": "document_start"
     }
   ]

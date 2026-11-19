@@ -1,16 +1,12 @@
 (() => {
-  const MIN_COMMENT_COUNT = 30;
-  const MIN_DURATION_SECONDS = 600;
-  const MAX_DURATION_SECONDS = 1_200;
   const MAX_BATCH = 8;
   const MAX_COMMENT_LENGTH = 5_000;
   const COMMENT_BODY = '[id="content-text"]';
   const WATCH_ROOT = "ytd-watch-flexy:not([hidden])";
   const VIDEO_ID = /^[\w-]{11}$/;
-  const RANGE_TOLERANCE_SECONDS = 0.05;
-  const COUNT_MULTIPLIERS = { k: 1_000, m: 1_000_000, b: 1_000_000_000, 천: 1_000, 만: 10_000, 억: 100_000_000 };
 
   let page;
+  let modelSource;
   let navigating = false;
   let navigationTimeout;
 
@@ -19,205 +15,179 @@
     return url.pathname === "/watch" && id && VIDEO_ID.test(id) ? id : null;
   }
 
-  function setProtection(mode) {
+  function setProtection(active) {
     const root = document.documentElement;
-    if (root && root.dataset.zoroProtection !== mode) {
-      root.dataset.zoroProtection = mode;
+    if (root?.hasAttribute("data-zoro-protection") !== active) {
+      root?.toggleAttribute("data-zoro-protection", active);
     }
   }
 
-  function disposeComment(entry) {
-    delete entry.body.dataset.zoroVisible;
-    entry.button.remove();
+  function disposeComment({ body, frame, button }) {
+    body.removeAttribute("data-zoro-visible");
+    frame.removeAttribute("data-zoro-concealed");
+    button.remove();
+  }
+
+  function clearComments(opened) {
+    for (const entry of opened.comments.values()) {
+      disposeComment(entry);
+    }
+    opened.comments.clear();
   }
 
   function openPage(videoId) {
-    page?.notice?.remove();
-    for (const entry of page?.comments.values() ?? []) {
-      disposeComment(entry);
+    if (page) {
+      page.transcriptRequest?.abort();
+      page.toolbar?.root.remove();
+      clearComments(page);
     }
     const opened = {
       videoId,
-      metadata: "pending",
+      transcript: null,
+      transcriptState: "loading",
+      hidden: true,
       comments: new Map(),
       judgments: new Map(),
-      playedRanges: [],
       nextCommentId: 1,
       inFlight: false,
-      duration: null,
-      mode: videoId ? "pending" : "off",
+      connectionFailed: false,
+      connectionVersion: 0,
     };
     page = opened;
-    setProtection(opened.mode);
-
+    setProtection(Boolean(videoId));
     if (videoId) {
-      loadVideoInfo(opened);
+      loadTranscript(opened);
     }
   }
 
-  async function loadVideoInfo(opened) {
-    if (page === opened && opened.metadata !== "pending") {
-      opened.metadata = "pending";
-      syncPage();
-    }
+  async function loadTranscript(opened) {
+    const request = new AbortController();
+    opened.transcriptRequest = request;
+    opened.transcriptState = "loading";
+    syncPage();
     try {
-      const response = await chrome.runtime.sendMessage({ type: "zoro-video", videoId: opened.videoId });
-      const data = response?.data;
-      if (!response?.ok || data?.videoId !== opened.videoId || typeof data?.eligible !== "boolean") {
-        opened.metadata = "error";
-      } else {
-        opened.metadata = data.eligible ? "eligible" : "ineligible";
-      }
+      opened.transcript = await globalThis.ZoroTranscript.load(opened.videoId, { signal: request.signal });
+      opened.transcriptState = opened.transcript ? "ready" : "unavailable";
     } catch {
-      opened.metadata = "error";
+      opened.transcriptState = "error";
     }
-    if (page === opened) {
+    if (page === opened && !request.signal.aborted) {
       syncPage();
     }
   }
 
-  function parseCommentCount(text) {
-    const match = text.match(/(\d+(?:[.,\u00a0\u202f ]\d+)*)\s*([KMB천만억])?/i);
-    if (!match) {
-      return null;
-    }
-    const [, raw, suffix] = match;
-    const normalized = raw.replace(/[\u00a0\u202f ]/g, "");
-    if (!suffix) {
-      return Number(normalized.replace(/[.,]/g, ""));
-    }
-    const number = /,\d{1,2}$/.test(normalized) && !normalized.includes(".")
-      ? normalized.replace(",", ".")
-      : normalized.replace(/,/g, "");
-    return Math.floor(Number(number) * COUNT_MULTIPLIERS[suffix.toLowerCase()]);
-  }
-
-  function countComments(commentsRoot) {
-    if (!commentsRoot) {
-      return null;
-    }
-    const heading = commentsRoot.querySelector("ytd-comments-header-renderer [id='count']");
-    const count = parseCommentCount(heading?.textContent ?? "");
-    if (Number.isFinite(count)) {
-      return count;
-    }
-    const renderedThreads = commentsRoot.querySelectorAll("ytd-comment-thread-renderer").length;
-    return renderedThreads >= MIN_COMMENT_COUNT ? renderedThreads : null;
-  }
-
-  function isAdPlaying(video) {
-    return Boolean(video?.closest(".ad-showing"));
-  }
-
-  function isTargetDuration(duration) {
-    return Number.isFinite(duration) && duration >= MIN_DURATION_SECONDS && duration <= MAX_DURATION_SECONDS;
-  }
-
-  function pageMode(opened, commentCount) {
-    if (
-      !opened.videoId ||
-      opened.metadata === "ineligible" ||
-      opened.metadata === "error" ||
-      (opened.duration !== null &&
-        (opened.duration < MIN_DURATION_SECONDS || opened.duration > MAX_DURATION_SECONDS)) ||
-      (commentCount !== null && commentCount < MIN_COMMENT_COUNT)
-    ) {
-      return "off";
-    }
-    if (opened.metadata === "eligible" && opened.duration !== null && commentCount !== null) {
-      return "active";
-    }
-    return "pending";
+  function protectionActive(opened) {
+    return opened.transcriptState === "ready" || opened.transcriptState === "loading";
   }
 
   function syncPage() {
     const videoId = videoIdAt();
-    if (videoId !== page?.videoId) {
+    if (videoId !== page.videoId) {
       navigating = false;
-      openPage(videoId);
-    }
-    if (!page) {
       openPage(videoId);
     }
     if (navigating || !videoId) {
       return;
     }
-
     const roots = [...document.querySelectorAll(WATCH_ROOT)];
     const watchRoot = roots.find((root) => root.getAttribute("video-id") === videoId)
       ?? roots.find((root) => !root.hasAttribute("video-id"));
-    const video = watchRoot?.querySelector("#movie_player video.html5-main-video, #movie_player video");
-    const playingAd = isAdPlaying(video);
-    if (
-      video && !playingAd && Number.isFinite(video.duration) && video.duration > 0 &&
-      (!isTargetDuration(page.duration) || isTargetDuration(video.duration))
-    ) {
-      page.duration = video.duration;
-    }
-    page.video = video;
-
     const commentsRoot = watchRoot?.querySelector("ytd-comments");
-    const commentCount = countComments(commentsRoot);
-    page.mode = pageMode(page, commentCount);
-    setProtection(page.mode);
-    showConnectionNotice(page, commentsRoot, commentCount);
+    const active = protectionActive(page);
 
-    if (page.mode === "off") {
-      for (const entry of page.comments.values()) {
-        disposeComment(entry);
-      }
-      page.comments.clear();
+    setProtection(active);
+    syncToolbar(page, commentsRoot);
+    if (!active) {
+      clearComments(page);
       return;
     }
     scanComments(page, commentsRoot);
     renderComments(page);
-    if (page.mode === "active") {
+    if (page.transcriptState === "ready") {
       submitNextBatch(page);
     }
   }
 
-  function showConnectionNotice(opened, commentsRoot, commentCount) {
-    if (
-      opened.metadata !== "error" ||
-      !commentsRoot ||
-      opened.duration === null ||
-      opened.duration < MIN_DURATION_SECONDS ||
-      opened.duration > MAX_DURATION_SECONDS ||
-      commentCount === null ||
-      commentCount < MIN_COMMENT_COUNT
-    ) {
-      opened.notice?.remove();
+  function createToolbar(opened) {
+    const root = document.createElement("div");
+    root.className = "zoro-toolbar";
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "zoro-global-toggle";
+    toggle.addEventListener("click", () => {
+      opened.hidden = !opened.hidden;
+      for (const entry of opened.comments.values()) {
+        entry.override = null;
+      }
+      syncPage();
+    });
+
+    const status = document.createElement("span");
+    status.setAttribute("role", "status");
+
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = "다시 시도";
+    retry.addEventListener("click", () => {
+      if (opened.transcriptState === "error") {
+        loadTranscript(opened);
+      } else {
+        opened.connectionFailed = false;
+        syncPage();
+      }
+    });
+
+    root.append(toggle, status, retry);
+    return { root, toggle, status, retry };
+  }
+
+  function syncToolbar(opened, commentsRoot) {
+    if (!commentsRoot) {
+      opened.toolbar?.root.remove();
       return;
     }
-    if (!opened.notice) {
-      const notice = document.createElement("div");
-      notice.className = "zoro-connection-notice";
-      const message = document.createElement("span");
-      message.setAttribute("role", "status");
-      message.textContent = "ZoroSpoiler에 연결할 수 없어 이 영상의 댓글 보호가 꺼져 있어요.";
-      const retry = document.createElement("button");
-      retry.type = "button";
-      retry.textContent = "다시 확인";
-      retry.addEventListener("click", () => loadVideoInfo(opened));
-      notice.append(message, retry);
-      opened.notice = notice;
+    opened.toolbar ??= createToolbar(opened);
+    const { root, toggle, status, retry } = opened.toolbar;
+    if (root.parentElement !== commentsRoot || root !== commentsRoot.firstElementChild) {
+      commentsRoot.prepend(root);
     }
-    if (opened.notice.parentElement !== commentsRoot) {
-      commentsRoot.prepend(opened.notice);
+    const active = protectionActive(opened);
+    const message = {
+      loading: "이 영상의 스크립트를 확인 중입니다.",
+      unavailable: "스크립트가 있는 영상에서만 스포일러 댓글을 가릴 수 있습니다.",
+      error: "이 영상의 스크립트를 불러오지 못했습니다.",
+      ready: opened.connectionFailed
+        ? "Zoro-1에 연결하지 못했습니다. 실행 상태와 확장 프로그램의 연결 설정을 확인하세요."
+        : "",
+    }[opened.transcriptState];
+    setText(toggle, opened.hidden ? "스포일러 댓글 보기" : "스포일러 댓글 가리기");
+    setText(status, message);
+    const disableToggle = !active;
+    if (toggle.disabled !== disableToggle) {
+      toggle.disabled = disableToggle;
+    }
+    const hideRetry = opened.transcriptState !== "error" && !opened.connectionFailed;
+    if (retry.hidden !== hideRetry) {
+      retry.hidden = hideRetry;
+    }
+  }
+
+  function setText(element, text) {
+    if (element.textContent !== text) {
+      element.textContent = text;
     }
   }
 
   function pickJudgment(opened, text) {
-    let judgment = opened.judgments.get(text);
-    if (!judgment) {
-      judgment = {
+    if (!opened.judgments.has(text)) {
+      opened.judgments.set(text, {
         id: `c${opened.nextCommentId++}`,
         text,
         status: text.length <= MAX_COMMENT_LENGTH ? "queued" : "uncertain",
-      };
-      opened.judgments.set(text, judgment);
+      });
     }
-    return judgment;
+    return opened.judgments.get(text);
   }
 
   function scanComments(opened, commentsRoot) {
@@ -230,27 +200,20 @@
     if (!commentsRoot) {
       return;
     }
-
     for (const body of commentsRoot.querySelectorAll(COMMENT_BODY)) {
       const text = body.textContent.trim();
       const existing = opened.comments.get(body);
-      if (!text) {
-        if (existing) {
-          disposeComment(existing);
-          opened.comments.delete(body);
-        }
-        continue;
-      }
       if (text === existing?.judgment.text) {
-        if (!existing.button.isConnected) {
-          body.after(existing.button);
-        }
+        attachCommentButton(existing);
         continue;
       }
       if (existing) {
         disposeComment(existing);
+        opened.comments.delete(body);
       }
-      addComment(opened, body, pickJudgment(opened, text));
+      if (text) {
+        addComment(opened, body, pickJudgment(opened, text));
+      }
     }
   }
 
@@ -258,155 +221,123 @@
     const button = document.createElement("button");
     button.type = "button";
     button.className = "zoro-spoiler-cover";
-    const entry = { body, button, judgment, manuallyRevealed: false };
+    const entry = { body, button, judgment, frame: body, override: null };
     button.addEventListener("click", (event) => {
       event.stopPropagation();
-      entry.manuallyRevealed = !entry.manuallyRevealed;
-      renderComments(opened);
+      entry.override = isConcealed(opened, entry) ? "show" : "hide";
+      renderComment(opened, entry);
     });
     opened.comments.set(body, entry);
-    body.after(button);
+    attachCommentButton(entry);
   }
 
-  function rememberPlayedRanges(opened) {
-    const { video } = opened;
-    if (!video || isAdPlaying(video) || !isTargetDuration(video.duration)) {
-      return;
+  function attachCommentButton(entry) {
+    const { body, button } = entry;
+    // Place the control outside YouTube's collapsed comment text and native More button.
+    const frame = body.closest("ytd-expander") ?? body.closest("#expander") ?? body;
+    if (frame !== entry.frame) {
+      entry.frame.removeAttribute("data-zoro-concealed");
+      entry.frame = frame;
     }
-    const observed = video.played;
-    if (!observed.length) {
-      return;
-    }
-    const ranges = [...opened.playedRanges];
-    for (let index = 0; index < observed.length; index++) {
-      const start = observed.start(index);
-      const end = observed.end(index);
-      if (Number.isFinite(start) && Number.isFinite(end) && start >= 0 && start < end && end <= video.duration) {
-        ranges.push([start, end]);
-      }
-    }
-    ranges.sort(([first], [second]) => first - second);
-    opened.playedRanges = [];
-    for (const [start, end] of ranges) {
-      const previous = opened.playedRanges.at(-1);
-      if (previous && start <= previous[1]) {
-        previous[1] = Math.max(previous[1], end);
-      } else {
-        opened.playedRanges.push([start, end]);
-      }
+    if (frame.nextElementSibling !== button) {
+      frame.after(button);
     }
   }
 
-  function hasPlayedRange(ranges, start, end) {
-    return ranges.some(([rangeStart, rangeEnd]) =>
-      rangeStart <= start + RANGE_TOLERANCE_SECONDS && rangeEnd >= end - RANGE_TOLERANCE_SECONDS,
-    );
+  function isConcealed(opened, entry) {
+    return entry.judgment.status !== "safe" &&
+      (entry.override === null ? opened.hidden : entry.override === "hide");
+  }
+
+  function renderComment(opened, entry) {
+    const { body, button, frame, judgment } = entry;
+    const concealed = isConcealed(opened, entry);
+    body.toggleAttribute("data-zoro-visible", !concealed);
+    frame.toggleAttribute("data-zoro-concealed", concealed);
+    const safe = judgment.status === "safe";
+    if (button.hidden !== safe) {
+      button.hidden = safe;
+    }
+    const labels = {
+      spoiler: "스포일러 보기",
+      uncertain: "스포일러 확인 불가 · 보기",
+      queued: opened.connectionFailed ? "스포일러 확인 불가 · 보기" : "스포일러 확인 중 · 보기",
+      sending: "스포일러 확인 중 · 보기",
+    };
+    setText(button, concealed ? labels[judgment.status] : "스포일러 다시 가리기");
   }
 
   function renderComments(opened) {
-    if (page !== opened || navigating || opened.mode === "off") {
-      return;
-    }
-    rememberPlayedRanges(opened);
-    for (const { body, button, judgment, manuallyRevealed } of opened.comments.values()) {
-      if (
-        !judgment.viewed &&
-        judgment.status === "spoiler" &&
-        hasPlayedRange(opened.playedRanges, judgment.startSec, judgment.endSec)
-      ) {
-        judgment.viewed = true;
-      }
-      const automaticallyVisible = judgment.status === "safe" || judgment.viewed === true;
-      body.toggleAttribute("data-zoro-visible", automaticallyVisible || manuallyRevealed);
-      if (button.hidden !== automaticallyVisible) {
-        button.hidden = automaticallyVisible;
-      }
-      const label = coverLabel(opened, judgment, manuallyRevealed);
-      if (button.textContent !== label) {
-        button.textContent = label;
-      }
+    for (const entry of opened.comments.values()) {
+      renderComment(opened, entry);
     }
   }
 
-  function coverLabel(opened, judgment, manuallyRevealed) {
-    if (manuallyRevealed) {
-      return "댓글 다시 가리기";
+  function resetConnection(opened) {
+    opened.connectionVersion++;
+    opened.connectionFailed = false;
+    for (const judgment of opened.judgments.values()) {
+      judgment.status = judgment.text.length <= MAX_COMMENT_LENGTH ? "queued" : "uncertain";
     }
-    if (judgment.status === "spoiler") {
-      return "아직 보지 않은 장면의 댓글 · 지금 보기";
-    }
-    if (["uncertain", "error"].includes(judgment.status)) {
-      return "스포일러 확인 불가 · 지금 보기";
-    }
-    return "스포일러 확인 중 · 지금 보기";
+    syncPage();
   }
 
   async function submitNextBatch(opened) {
-    if (opened.inFlight) {
+    if (!modelSource || opened.inFlight || opened.connectionFailed) {
       return;
     }
     const batch = [...new Set([...opened.comments.values()].map((entry) => entry.judgment))]
       .filter((judgment) => judgment.status === "queued")
-      .slice(0, MAX_BATCH);
+      .slice(0, modelSource === "local" ? 1 : MAX_BATCH);
     if (!batch.length) {
       return;
     }
-
     opened.inFlight = true;
+    const version = opened.connectionVersion;
     for (const judgment of batch) {
       judgment.status = "sending";
     }
     try {
+      const { title, cues, chapters } = opened.transcript;
       const response = await chrome.runtime.sendMessage({
         type: "zoro-judge",
         videoId: opened.videoId,
+        title,
+        cues,
+        chapters,
         comments: batch.map(({ id, text }) => ({ id, text })),
       });
+      if (version !== opened.connectionVersion) {
+        return;
+      }
       if (!response?.ok || !Array.isArray(response.data?.decisions)) {
         throw new Error("Invalid judge response");
       }
-      const decisions = new Map(response.data.decisions.filter(Boolean).map((decision) => [decision.id, decision]));
+      const decisions = new Map(response.data.decisions.filter(Boolean).map(({ id, status }) => [id, status]));
       for (const judgment of batch) {
-        applyDecision(judgment, decisions.get(judgment.id), opened.duration);
+        const status = decisions.get(judgment.id);
+        judgment.status = status === "safe" || status === "spoiler" ? status : "uncertain";
       }
     } catch {
-      for (const judgment of batch) {
-        judgment.status = "error";
+      if (version === opened.connectionVersion) {
+        opened.connectionFailed = true;
+        for (const judgment of batch) {
+          judgment.status = "queued";
+        }
       }
     } finally {
       opened.inFlight = false;
-      if (page === opened && !navigating && opened.mode === "active") {
-        renderComments(opened);
-        submitNextBatch(opened);
+      if (page === opened && !navigating) {
+        syncPage();
       }
     }
-  }
-
-  function applyDecision(judgment, decision, duration) {
-    if (decision?.status === "safe") {
-      judgment.status = "safe";
-      return;
-    }
-    const { status, startSec, endSec } = decision ?? {};
-    if (
-      status === "spoiler" &&
-      Number.isFinite(startSec) &&
-      Number.isFinite(endSec) &&
-      0 <= startSec &&
-      startSec < endSec &&
-      endSec <= duration
-    ) {
-      Object.assign(judgment, { status, startSec, endSec });
-      return;
-    }
-    judgment.status = "uncertain";
   }
 
   function protectDuringNavigation() {
     navigating = true;
-    setProtection("pending");
-    for (const { body } of page?.comments.values() ?? []) {
-      delete body.dataset.zoroVisible;
+    setProtection(true);
+    for (const { body } of page.comments.values()) {
+      body.removeAttribute("data-zoro-visible");
     }
     clearTimeout(navigationTimeout);
     navigationTimeout = setTimeout(finishNavigation, 1_000);
@@ -428,21 +359,14 @@
     }
     return [...addedNodes, ...removedNodes].some(
       (node) =>
-        node.matches?.("ytd-watch-flexy, ytd-comments, video") ||
-        node.querySelector?.("ytd-watch-flexy, ytd-comments, video"),
+        node.matches?.("ytd-watch-flexy, ytd-comments") ||
+        node.querySelector?.("ytd-watch-flexy, ytd-comments"),
     );
   }
 
   openPage(videoIdAt());
   const observer = new MutationObserver((mutations) => {
-    if (
-      !document.documentElement?.hasAttribute("data-zoro-protection") ||
-      videoIdAt() !== page.videoId ||
-      mutations.some(affectsWatchPage)
-    ) {
-      if (document.documentElement && !document.documentElement.hasAttribute("data-zoro-protection")) {
-        setProtection(navigating ? "pending" : page.mode);
-      }
+    if (videoIdAt() !== page.videoId || mutations.some(affectsWatchPage)) {
       syncPage();
     }
   });
@@ -462,16 +386,27 @@
       protectDuringNavigation();
     }
   });
-  for (const eventName of ["loadedmetadata", "durationchange", "playing", "emptied"]) {
-    document.addEventListener(eventName, syncPage, true);
+  function useModelSource(value) {
+    const source = value === "local" ? "local" : "brev";
+    if (modelSource === source) {
+      return;
+    }
+    const previous = modelSource;
+    modelSource = source;
+    if (previous && page.videoId) {
+      resetConnection(page);
+    } else {
+      syncPage();
+    }
   }
-  for (const eventName of ["timeupdate", "seeking", "seeked", "pause", "ended"]) {
-    document.addEventListener(eventName, (event) => {
-      if (page.mode !== "active" || event.target !== page.video) {
-        syncPage();
-      } else {
-        renderComments(page);
-      }
-    }, true);
-  }
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes.modelSource) {
+      useModelSource(changes.modelSource.newValue);
+    }
+  });
+  chrome.storage.local.get("modelSource").then(
+    (settings) => { if (!modelSource) useModelSource(settings.modelSource); },
+    () => { if (!modelSource) useModelSource(); },
+  );
 })();

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ZoroSpoiler 설정</title>
+  <link rel="stylesheet" href="options.css">
+  <script src="options.js" defer></script>
+</head>
+<body>
+  <main>
+    <h1>ZoroSpoiler 설정</h1>
+    <fieldset disabled>
+      <legend>Zoro-1 연결</legend>
+      <label><input type="radio" name="model-source" value="brev"> Brev의 Zoro-1</label>
+      <p>터미널에서 연결을 열고 유지하세요.</p>
+      <code>brev port-forward l40s-zoro-spoiler --port 8876:8876</code>
+      <label><input type="radio" name="model-source" value="local"> 로컬 Zoro-1</label>
+      <p>저장소의 로컬 모델 설치 안내를 따른 뒤 이 컴퓨터에서 실행하세요.</p>
+      <code>python3 -m server serve --local-model</code>
+    </fieldset>
+    <p>유튜브에서 스크립트(자막)를 불러올 수 있는 동영상에 적용됩니다.</p>
+    <p id="status" role="status"></p>
+  </main>
+</body>
+</html>
