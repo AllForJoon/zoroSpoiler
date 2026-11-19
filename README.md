@@ -6,7 +6,7 @@
 
 38초 편집본이 아래에서 자동으로 반복됩니다. 댓글을 여는 장면에는 실제 스포일러가 잠시 표시됩니다.
 
-![식스센스와 연애박사에서 ZoroSpoiler를 켜기 전후의 댓글창 비교](docs/demo/zoro-spoiler-public-demo.gif)
+![식스센스와 연애박사에서 ZoroSpoiler를 켜기 전후의 댓글창 비교](docs/demo/zoro-spoiler-redacted-demo.gif)
 
 <details>
 <summary>MP4 플레이어 열기</summary>
