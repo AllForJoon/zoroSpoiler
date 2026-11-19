@@ -10,7 +10,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from .__main__ import SpoilerServer
-from .decision import ZoroDecisionClient, parse_answer, render_window, request_for, transcript_windows
+from .decision import ZoroDecisionClient, candidate_windows, parse_probability, transcript_windows
 from .videos import Video, parse_captions, parse_chapters, save_video, validate_video
 
 VIDEO_ID = "fixture1234"
@@ -36,36 +36,43 @@ class DecisionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "600 to 1200"):
             validate_video(Video(VIDEO_ID, "추리 예능", 1201, "ko", VIDEO.chapters, VIDEO.cues))
 
-    def test_late_caption_is_grounded_and_weak_response_is_covered(self):
-        body, scenes = request_for(VIDEO, "범인이 옆집 사람이었네", transcript_windows(VIDEO))
-        self.assertIn("범인은 옆집 사람이었습니다", body["request"]["state"])
-        self.assertEqual(set(scenes), {"scene_720"})
-        envelope = {"answers": {"spoiler": {"type": "choice", "probabilities": {
-            "safe": 0.01, "uncertain": 0.09, "scene_720": 0.90,
-        }}}}
-        self.assertEqual(parse_answer(envelope, scenes), {"status": "spoiler", "startSec": 720, "endSec": 780})
-        envelope["answers"]["spoiler"]["probabilities"] = {"safe": 0.75, "uncertain": 0.20, "scene_720": 0.05}
-        self.assertEqual(parse_answer(envelope, scenes), {"status": "uncertain"})
-        with self.assertRaisesRegex(ValueError, "choice response"):
-            parse_answer(envelope, {})
+    def test_late_caption_has_exact_release_bounds_and_weak_evidence_stays_covered(self):
+        client = ZoroDecisionClient("http://127.0.0.1:0", timeout=2)
+        self.addCleanup(client.close)
+        windows = transcript_windows(VIDEO)
+        comment = "연출이 좋았어요.\n범인이 옆집 사람이었네"
+        with patch.object(client, "ask_probability", side_effect=[0.90, 0.91]) as ask:
+            decision = client.judge_one(VIDEO, windows, comment)
+        self.assertEqual(decision, {"status": "spoiler", "startSec": 760, "endSec": 765})
+        reveal_state, reveal_label, _, deadline = ask.call_args_list[0].args
+        self.assertEqual(reveal_label, "reveals")
+        self.assertEqual(json.loads(reveal_state)["viewer_comment"], comment)
+        grounding_state, grounding_label, _, grounding_deadline = ask.call_args_list[1].args
+        self.assertEqual(grounding_label, "grounded")
+        self.assertEqual(grounding_deadline, deadline)
+        self.assertIn(VIDEO.cues[0].text, grounding_state)
 
-    def test_caption_budget_prefers_the_stronger_later_match(self):
+        with patch.object(client, "ask_probability", side_effect=[0.93, 0.65]):
+            self.assertEqual(client.judge_one(VIDEO, windows, comment), {"status": "uncertain"})
+
+    def test_caption_candidates_prioritize_the_stronger_later_match(self):
         early_cues = parse_captions("WEBVTT\n\n00:10.000 --> 00:13.000\n반전 전개에 관한 이야기입니다.\n")
         video = Video(
             VIDEO_ID, VIDEO.title, VIDEO.duration, VIDEO.language, VIDEO.chapters, early_cues + VIDEO.cues,
         )
         comment = "반전 범인이 옆집 사람이었네"
-        windows = transcript_windows(video)
-        full_body, full_scenes = request_for(video, comment, windows)
-        self.assertEqual(list(full_scenes), ["scene_0", "scene_720"])
+        windows = candidate_windows(comment, transcript_windows(video))
+        self.assertEqual(windows[0].cues, VIDEO.cues)
 
-        full_size = len(full_body["request"]["state"].encode("utf-8"))
-        smallest_scene_size = min(
-            len(render_window(window).encode("utf-8")) for window in full_scenes.values()
-        )
-        with patch("server.decision.MAX_STATE_BYTES", full_size - smallest_scene_size):
-            _, limited_scenes = request_for(video, comment, windows)
-        self.assertEqual(list(limited_scenes), ["scene_720"])
+    def test_typed_probability_requires_noul_schema_and_numeric_value(self):
+        envelope = {"answers": {"grounded": {"type": "noul", "noul": 0.95}}}
+        self.assertEqual(parse_probability(envelope, "grounded"), 0.95)
+        for bad_value in (True, "0.95", float("nan"), 1.01):
+            envelope["answers"]["grounded"]["noul"] = bad_value
+            with self.assertRaises(ValueError):
+                parse_probability(envelope, "grounded")
+        with self.assertRaises(ValueError):
+            parse_probability(envelope, "reveals")
 
 
 class StubZoroHandler(BaseHTTPRequestHandler):
@@ -78,13 +85,13 @@ class StubZoroHandler(BaseHTTPRequestHandler):
         if self.path != "/v1/decide" or payload["reasoning"] is not False:
             self.send_error(400)
             return
-        question = payload["request"]["questions"]["spoiler"]
-        labels = question["criteria"]
-        winner = next((label for label in labels if label.startswith("scene_")), "safe")
-        other = 0.05 / (len(labels) - 1)
-        response = json.dumps({"answers": {"spoiler": {
-            "type": "choice",
-            "probabilities": {label: 0.95 if label == winner else other for label in labels},
+        ((label, question),) = payload["request"]["questions"].items()
+        if question["type"] != "noul" or label not in {"reveals", "grounded"}:
+            self.send_error(400)
+            return
+        probability = 0.95 if "범인" in payload["request"]["state"] else 0.05
+        response = json.dumps({"answers": {label: {
+            "type": "noul", "noul": probability,
         }}}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -128,7 +135,7 @@ class EndpointTests(unittest.TestCase):
             {"id": "safe", "text": "재밌어요"},
         ]})
         self.assertEqual(response["decisions"], [
-            {"id": "spoil", "status": "spoiler", "startSec": 720, "endSec": 780},
+            {"id": "spoil", "status": "spoiler", "startSec": 760, "endSec": 765},
             {"id": "safe", "status": "safe"},
         ])
 
