@@ -1,0 +1,45 @@
+html:is([data-zoro-protection="pending"], [data-zoro-protection="active"])
+  ytd-comments [id="content-text"]:not([data-zoro-visible]),
+html:is([data-zoro-protection="pending"], [data-zoro-protection="active"])
+  ytd-comments [id="content-text"]:not([data-zoro-visible]) * {
+  visibility: hidden !important;
+}
+
+.zoro-spoiler-cover {
+  display: none;
+}
+
+html:is([data-zoro-protection="pending"], [data-zoro-protection="active"])
+  .zoro-spoiler-cover:not([hidden]) {
+  box-sizing: border-box;
+  display: inline-block;
+  max-width: 100%;
+  margin: 4px 0;
+  padding: 5px 11px;
+  border: 1px solid var(--yt-spec-10-percent-layer, #999);
+  border-radius: 8px;
+  background: var(--yt-spec-badge-chip-background, #e6e6e6);
+  color: var(--yt-spec-text-primary, #222);
+  cursor: pointer;
+  font: inherit;
+  font-size: 1.2rem;
+  text-align: start;
+}
+
+.zoro-spoiler-cover:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.zoro-connection-notice {
+  margin: 8px 0;
+  color: var(--yt-spec-text-secondary, #555);
+  font-size: 1.3rem;
+  line-height: 1.5;
+}
+
+.zoro-connection-notice button {
+  margin-inline-start: 8px;
+  font: inherit;
+  cursor: pointer;
+}
