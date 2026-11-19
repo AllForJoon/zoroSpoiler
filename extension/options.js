@@ -4,7 +4,7 @@ const status = document.getElementById("status");
 async function loadSettings() {
   try {
     const { modelSource } = await chrome.storage.local.get("modelSource");
-    const saved = modelSource === "local" ? "local" : "brev";
+    const saved = modelSource === "local" ? "local" : "remote";
     settings.querySelector(`input[value="${saved}"]`).checked = true;
     settings.disabled = false;
   } catch {

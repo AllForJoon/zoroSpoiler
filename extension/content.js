@@ -387,7 +387,7 @@
     }
   });
   function useModelSource(value) {
-    const source = value === "local" ? "local" : "brev";
+    const source = value === "local" ? "local" : "remote";
     if (modelSource === source) {
       return;
     }

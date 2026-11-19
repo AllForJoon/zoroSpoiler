@@ -1,5 +1,5 @@
 const API_ORIGINS = {
-  brev: "http://127.0.0.1:8876",
+  remote: "http://127.0.0.1:8876",
   local: "http://127.0.0.1:8878",
 };
 const VIDEO_ID = /^[\w-]{11}$/;
@@ -43,7 +43,7 @@ async function judge({ videoId, title, cues, chapters, comments }) {
   }
 
   const { modelSource } = await chrome.storage.local.get("modelSource");
-  const origin = modelSource === "local" ? API_ORIGINS.local : API_ORIGINS.brev;
+  const origin = modelSource === "local" ? API_ORIGINS.local : API_ORIGINS.remote;
   const response = await fetch(`${origin}/v1/judge`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
