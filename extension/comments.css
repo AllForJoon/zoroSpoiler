@@ -5,6 +5,11 @@ html:is([data-zoro-protection="pending"], [data-zoro-protection="active"])
   visibility: hidden !important;
 }
 
+html:is([data-zoro-protection="pending"], [data-zoro-protection="active"])
+  ytd-comments [id="content-text"]:not([data-zoro-visible]):has(+ .zoro-spoiler-cover) {
+  display: none !important;
+}
+
 .zoro-spoiler-cover {
   display: none;
 }
@@ -24,6 +29,20 @@ html:is([data-zoro-protection="pending"], [data-zoro-protection="active"])
   font: inherit;
   font-size: 1.2rem;
   text-align: start;
+}
+
+html:is([data-zoro-protection="pending"], [data-zoro-protection="active"])
+  [id="content-text"]:not([data-zoro-visible]) + .zoro-spoiler-cover::before {
+  display: inline-block;
+  width: 2.3rem;
+  height: .55rem;
+  margin-inline-end: .7rem;
+  border-radius: 999px;
+  background: currentColor;
+  content: "";
+  filter: blur(2px);
+  opacity: .55;
+  vertical-align: .15em;
 }
 
 .zoro-spoiler-cover:focus-visible {
