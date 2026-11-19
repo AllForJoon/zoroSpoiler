@@ -41,6 +41,7 @@
       metadata: "pending",
       comments: new Map(),
       judgments: new Map(),
+      playedRanges: [],
       nextCommentId: 1,
       inFlight: false,
       duration: null,
@@ -108,6 +109,10 @@
     return Boolean(video?.closest(".ad-showing"));
   }
 
+  function isTargetDuration(duration) {
+    return Number.isFinite(duration) && duration >= MIN_DURATION_SECONDS && duration <= MAX_DURATION_SECONDS;
+  }
+
   function pageMode(opened, commentCount) {
     if (
       !opened.videoId ||
@@ -143,7 +148,10 @@
       ?? roots.find((root) => !root.hasAttribute("video-id"));
     const video = watchRoot?.querySelector("#movie_player video.html5-main-video, #movie_player video");
     const playingAd = isAdPlaying(video);
-    if (video && !playingAd && Number.isFinite(video.duration) && video.duration > 0) {
+    if (
+      video && !playingAd && Number.isFinite(video.duration) && video.duration > 0 &&
+      (!isTargetDuration(page.duration) || isTargetDuration(video.duration))
+    ) {
       page.duration = video.duration;
     }
     page.video = video;
@@ -260,28 +268,51 @@
     body.after(button);
   }
 
-  function hasPlayedRange(played, start, end) {
-    for (let i = 0; played && i < played.length; i++) {
-      if (
-        played.start(i) <= start + RANGE_TOLERANCE_SECONDS &&
-        played.end(i) >= end - RANGE_TOLERANCE_SECONDS
-      ) {
-        return true;
+  function rememberPlayedRanges(opened) {
+    const { video } = opened;
+    if (!video || isAdPlaying(video) || !isTargetDuration(video.duration)) {
+      return;
+    }
+    const observed = video.played;
+    if (!observed.length) {
+      return;
+    }
+    const ranges = [...opened.playedRanges];
+    for (let index = 0; index < observed.length; index++) {
+      const start = observed.start(index);
+      const end = observed.end(index);
+      if (Number.isFinite(start) && Number.isFinite(end) && start >= 0 && start < end && end <= video.duration) {
+        ranges.push([start, end]);
       }
     }
-    return false;
+    ranges.sort(([first], [second]) => first - second);
+    opened.playedRanges = [];
+    for (const [start, end] of ranges) {
+      const previous = opened.playedRanges.at(-1);
+      if (previous && start <= previous[1]) {
+        previous[1] = Math.max(previous[1], end);
+      } else {
+        opened.playedRanges.push([start, end]);
+      }
+    }
+  }
+
+  function hasPlayedRange(ranges, start, end) {
+    return ranges.some(([rangeStart, rangeEnd]) =>
+      rangeStart <= start + RANGE_TOLERANCE_SECONDS && rangeEnd >= end - RANGE_TOLERANCE_SECONDS,
+    );
   }
 
   function renderComments(opened) {
     if (page !== opened || navigating || opened.mode === "off") {
       return;
     }
-    const played = isAdPlaying(opened.video) ? null : opened.video?.played;
+    rememberPlayedRanges(opened);
     for (const { body, button, judgment, manuallyRevealed } of opened.comments.values()) {
       if (
         !judgment.viewed &&
         judgment.status === "spoiler" &&
-        hasPlayedRange(played, judgment.startSec, judgment.endSec)
+        hasPlayedRange(opened.playedRanges, judgment.startSec, judgment.endSec)
       ) {
         judgment.viewed = true;
       }
@@ -434,7 +465,7 @@
   for (const eventName of ["loadedmetadata", "durationchange", "playing", "emptied"]) {
     document.addEventListener(eventName, syncPage, true);
   }
-  for (const eventName of ["timeupdate", "seeked", "ended"]) {
+  for (const eventName of ["timeupdate", "seeking", "seeked", "pause", "ended"]) {
     document.addEventListener(eventName, (event) => {
       if (page.mode !== "active" || event.target !== page.video) {
         syncPage();
