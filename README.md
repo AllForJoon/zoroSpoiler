@@ -4,7 +4,7 @@
 
 ## 실제 Chrome 데모
 
-[데모 영상 보기 (MP4, 25.5초)](docs/demo/zoro-spoiler-chrome-before-after-demo.mp4)
+[데모 영상 다운로드 (MP4, 25.5초)](docs/demo/zoro-spoiler-chrome-before-after-demo.mp4?raw=1)
 
 | 영상 | 열어본 방법 |
 | --- | --- |
