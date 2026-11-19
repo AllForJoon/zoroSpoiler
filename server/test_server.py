@@ -5,11 +5,12 @@ import unittest
 from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from .__main__ import SpoilerServer
-from .decision import ZoroDecisionClient, parse_answer, request_for, transcript_windows
+from .decision import ZoroDecisionClient, parse_answer, render_window, request_for, transcript_windows
 from .videos import Video, parse_captions, parse_chapters, save_video, validate_video
 
 VIDEO_ID = "fixture1234"
@@ -47,6 +48,24 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(parse_answer(envelope, scenes), {"status": "uncertain"})
         with self.assertRaisesRegex(ValueError, "choice response"):
             parse_answer(envelope, {})
+
+    def test_caption_budget_prefers_the_stronger_later_match(self):
+        early_cues = parse_captions("WEBVTT\n\n00:10.000 --> 00:13.000\n반전 전개에 관한 이야기입니다.\n")
+        video = Video(
+            VIDEO_ID, VIDEO.title, VIDEO.duration, VIDEO.language, VIDEO.chapters, early_cues + VIDEO.cues,
+        )
+        comment = "반전 범인이 옆집 사람이었네"
+        windows = transcript_windows(video)
+        full_body, full_scenes = request_for(video, comment, windows)
+        self.assertEqual(list(full_scenes), ["scene_0", "scene_720"])
+
+        full_size = len(full_body["request"]["state"].encode("utf-8"))
+        smallest_scene_size = min(
+            len(render_window(window).encode("utf-8")) for window in full_scenes.values()
+        )
+        with patch("server.decision.MAX_STATE_BYTES", full_size - smallest_scene_size):
+            _, limited_scenes = request_for(video, comment, windows)
+        self.assertEqual(list(limited_scenes), ["scene_720"])
 
 
 class StubZoroHandler(BaseHTTPRequestHandler):

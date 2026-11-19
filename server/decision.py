@@ -82,7 +82,7 @@ def candidate_windows(comment: str, windows: tuple[Window, ...]) -> list[Window]
         for window, match in zip(windows, matches)
     ]
     best = sorted(scored, reverse=True, key=lambda item: item[0])[:MAX_CANDIDATES]
-    return sorted((window for score, window in best if score > 0 and window.cues), key=lambda window: window.start)
+    return [window for score, window in best if score > 0 and window.cues]
 
 
 def window_label(window: Window) -> str:
@@ -98,17 +98,24 @@ def render_window(window: Window) -> str:
 def request_for(video: Video, comment: str, windows: tuple[Window, ...]) -> tuple[dict | None, dict[str, Window]]:
     inputs = json.dumps({"영상 제목": video.title, "댓글 본문": comment}, ensure_ascii=False)
     state = f"{inputs}\n영상 자막 후보:"
-    if len(state.encode("utf-8")) > MAX_STATE_BYTES:
+    remaining_bytes = MAX_STATE_BYTES - len(state.encode("utf-8"))
+    if remaining_bytes < 0:
         return None, {}
     criteria = {
         "safe": "결과를 밝히거나 강하게 암시하지 않는 댓글",
         "uncertain": "스포일러 가능성이 있지만 관련 사건이나 공개 시점을 충분히 확인할 수 없는 댓글",
     }
-    scenes = {}
+    admitted = []
     for window in candidate_windows(comment, windows):
         rendered = render_window(window)
-        if len(state.encode("utf-8")) + len(rendered.encode("utf-8")) > MAX_STATE_BYTES:
+        rendered_bytes = len(rendered.encode("utf-8"))
+        if rendered_bytes > remaining_bytes:
             continue
+        admitted.append((window, rendered))
+        remaining_bytes -= rendered_bytes
+
+    scenes = {}
+    for window, rendered in sorted(admitted, key=lambda item: item[0].start):
         label = window_label(window)
         state += rendered
         scenes[label] = window
