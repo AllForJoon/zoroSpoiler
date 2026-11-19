@@ -260,8 +260,8 @@
     }
     const labels = {
       spoiler: "스포일러 보기",
-      uncertain: "스포일러 확인 불가 · 보기",
-      queued: opened.connectionFailed ? "스포일러 확인 불가 · 보기" : "스포일러 확인 중 · 보기",
+      uncertain: "스포일러 의심 · 보기",
+      queued: opened.connectionFailed ? "스포일러 의심 · 보기" : "스포일러 확인 중 · 보기",
       sending: "스포일러 확인 중 · 보기",
     };
     setText(button, concealed ? labels[judgment.status] : "스포일러 다시 가리기");
