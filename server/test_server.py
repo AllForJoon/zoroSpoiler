@@ -3,6 +3,7 @@ import tempfile
 import threading
 import unittest
 from contextlib import ExitStack
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
@@ -11,6 +12,7 @@ from urllib.request import Request, urlopen
 
 from .__main__ import SpoilerServer
 from .decision import ZoroDecisionClient, candidate_windows, parse_probability, transcript_windows
+from .episodes import episode_numbers, episode_spans
 from .videos import Video, parse_captions, parse_chapters, save_video, validate_video
 
 VIDEO_ID = "fixture1234"
@@ -21,6 +23,21 @@ VIDEO = Video(
     "ko",
     parse_chapters("0:00 시작\n12:40 - 반전"),
     parse_captions("WEBVTT\n\n12:40.000 --> 12:45.000\n범인은 옆집 사람이었습니다.\n"),
+)
+EPISODE_VIDEO = Video(
+    VIDEO_ID,
+    "추리 드라마 총정리",
+    780,
+    "ko",
+    parse_chapters("00:00 소개\n01:00 3화 장면\n03:00 9~10화 장면\n04:00 후기"),
+    parse_captions(
+        "WEBVTT\n\n00:59.000 --> 01:05.000\n작품 소개입니다.\n\n"
+        "01:05.000 --> 01:10.000\n범인은 옆집 사람이라는 3화 장면입니다.\n\n"
+        "02:55.000 --> 02:58.000\n9화 예고에서 범인이 보입니다.\n\n"
+        "03:00.000 --> 03:02.000\n9화에서 주인공이 문을 엽니다.\n\n"
+        "03:02.000 --> 03:12.000\n9화의 엔딩에서 범인은 옆집 사람이었다는 사실이 밝혀집니다.\n\n"
+        "03:20.000 --> 03:25.000\n10화부터는 새로운 단서가 제시됩니다.\n"
+    ),
 )
 
 
@@ -66,6 +83,45 @@ class DecisionTests(unittest.TestCase):
         comment = "반전 범인이 옆집 사람이었네"
         windows = candidate_windows(comment, transcript_windows(video))
         self.assertEqual(windows[0].cues, VIDEO.cues)
+
+    def test_episode_scope_requires_ordered_transitions_and_normalizes_episode_references(self):
+        self.assertEqual(episode_numbers("제９회 엔딩"), {9})
+        self.assertEqual(episode_numbers("9, 10화"), {9, 10})
+        self.assertEqual(episode_numbers("밤 9시, 9회차, 9화면"), set())
+        self.assertEqual(episode_spans(EPISODE_VIDEO)[9], ((180.0, 200.0),))
+        self.assertEqual(episode_spans(EPISODE_VIDEO)[10], ((200.0, 240.0),))
+        missing_transition = replace(EPISODE_VIDEO, cues=EPISODE_VIDEO.cues[:-1])
+        self.assertNotIn(9, episode_spans(missing_transition))
+
+    def test_explicit_episode_uses_only_that_episode_and_keeps_the_same_gates(self):
+        client = ZoroDecisionClient("http://127.0.0.1:0", timeout=2)
+        self.addCleanup(client.close)
+        windows = transcript_windows(EPISODE_VIDEO)
+        comment = "9회에서 범인이 옆집 사람이었다는 엔딩이었어요."
+        with patch.object(client, "ask_probability", side_effect=[0.60, 0.90, 0.92, 0.20]) as ask:
+            result = client.judge_one(EPISODE_VIDEO, windows, comment)
+        self.assertEqual(result, {"status": "spoiler", "startSec": 180.0, "endSec": 192.0})
+        for call in ask.call_args_list[1:]:
+            state = json.loads(call.args[0])
+            self.assertEqual(state["명시된 회차"], 9)
+            self.assertEqual(state["자막 회차"], 9)
+            self.assertIn("9화의 엔딩", state["자막"])
+            for unrelated in ("3화", "예고", "10화"):
+                self.assertNotIn(unrelated, state["자막"])
+
+        accepted_scores = {"reveals": 0.90, "grounded": 0.92, "undisclosed": 0.20}
+        for failed_label, failed_score in (("reveals", 0.79), ("grounded", 0.87), ("undisclosed", 0.46)):
+            with self.subTest(failed_label=failed_label):
+                scores = {**accepted_scores, failed_label: failed_score}
+                with patch.object(client, "ask_probability", side_effect=lambda state, label, *_: scores[label]):
+                    self.assertEqual(client.judge_one(EPISODE_VIDEO, windows, comment), {"status": "uncertain"})
+        with patch.object(client, "ask_probability", side_effect=[0.60, 0.92, 0.95, 0.54]) as ask:
+            self.assertEqual(client.judge_one(EPISODE_VIDEO, windows, comment), {"status": "uncertain"})
+            self.assertEqual(ask.call_count, 4)
+        with patch.object(client, "ask_probability") as ask:
+            for unscoped in ("3화랑 9회 범인을 봤어요.", "15화에서 범인이 밝혀져요."):
+                self.assertEqual(client.judge_one(EPISODE_VIDEO, windows, unscoped), {"status": "uncertain"})
+            ask.assert_not_called()
 
     def test_typed_probability_requires_noul_schema_and_numeric_value(self):
         envelope = {"answers": {"grounded": {"type": "noul", "noul": 0.95}}}
