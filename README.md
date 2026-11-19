@@ -52,7 +52,7 @@ python3 -m server register \
 브라우저를 실행하는 컴퓨터에서 이 저장소를 받아 `chrome://extensions`의 **개발자 모드 → 압축해제된 확장 프로그램을 로드합니다**로 `extension/`을 선택합니다. 같은 컴퓨터에서 아래 터널을 열고 유지합니다.
 
 ```sh
-brev port-forward l40s-twodrone-instance --port 8876:8876
+brev port-forward l40s-zoro-spoiler --port 8876:8876
 ```
 
 등록한 영상의 유튜브 페이지를 엽니다. 댓글이 로드되면 보호 상태를 확인할 수 있습니다. 확장 프로그램을 설치하기 전에 열어 둔 탭은 새로고침합니다. [Chrome 확장 프로그램 로드](https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world#load-unpacked) · [Brev 포트 포워딩](https://docs.nvidia.com/brev/cli/connectivity#brev-port-forward)
