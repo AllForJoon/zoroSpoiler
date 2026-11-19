@@ -11,7 +11,7 @@
 <details>
 <summary>MP4 플레이어 열기</summary>
 
-https://github.com/user-attachments/assets/99e0a2a8-6257-4d57-b21f-2f4640676a76
+https://github.com/user-attachments/assets/16dd0892-2bdb-4883-b81e-506eeb83e56d
 
 </details>
 
