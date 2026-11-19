@@ -53,7 +53,7 @@ class DecisionTests(unittest.TestCase):
         self.assertIn(VIDEO.cues[0].text, grounding_state)
         self.assertEqual(ask.call_args_list[2].args[:2], (grounding_state, "undisclosed"))
 
-        with patch.object(client, "ask_probability", side_effect=[0.93, 0.65]):
+        with patch.object(client, "ask_probability", side_effect=[0.93, 0.85]):
             self.assertEqual(client.judge_one(VIDEO, windows, comment), {"status": "uncertain"})
         with patch.object(client, "ask_probability", side_effect=[0.93, 0.98, 0.75]):
             self.assertEqual(client.judge_one(VIDEO, windows, comment), {"status": "uncertain"})
